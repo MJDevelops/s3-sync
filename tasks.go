@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"sync"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
@@ -16,8 +17,6 @@ import (
 )
 
 func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) {
-	manager := transfermanager.New(app.s3Client)
-
 	for _, task := range bucket.Tasks {
 		_, err := app.scheduler.NewJob(
 			gocron.CronJob(
@@ -50,7 +49,7 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 									defer f.Close()
 									slog.Info("uploading object", "object", path)
 
-									_, err = manager.UploadObject(ctx, &transfermanager.UploadObjectInput{
+									_, err = app.manager.UploadObject(ctx, &transfermanager.UploadObjectInput{
 										Bucket: aws.String(bucket.Name),
 										Key:    aws.String(path),
 										Body:   f,
@@ -96,6 +95,8 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 }
 
 func (app *Application) ScheduleTasks(ctx context.Context) {
+	var wg sync.WaitGroup
+
 	for _, bucket := range app.config.Buckets {
 		_, err := app.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
 			Bucket: aws.String(bucket.Name),
@@ -114,6 +115,10 @@ func (app *Application) ScheduleTasks(ctx context.Context) {
 			continue
 		}
 
-		app.scheduleBucketTasks(ctx, bucket)
+		wg.Go(func() {
+			app.scheduleBucketTasks(ctx, bucket)
+		})
 	}
+
+	wg.Wait()
 }

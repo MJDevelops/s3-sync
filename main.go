@@ -11,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/go-co-op/gocron/v2"
 )
@@ -19,6 +20,7 @@ type Application struct {
 	s3Client  *s3.Client
 	config    *Config
 	scheduler gocron.Scheduler
+	manager   *transfermanager.Client
 }
 
 func Initialize(scheduler gocron.Scheduler) (*Application, error) {
@@ -48,6 +50,8 @@ func Initialize(scheduler gocron.Scheduler) (*Application, error) {
 		o.BaseEndpoint = aws.String(s3Endpoint)
 		o.Region = s3Region
 	})
+
+	app.manager = transfermanager.New(app.s3Client)
 
 	app.config, err = ParseConfig(configPath)
 	if err != nil {
