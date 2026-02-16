@@ -22,7 +22,7 @@ type Config struct {
 	Buckets []Bucket
 }
 
-func ParseConfig(path string) (Config, error) {
+func ParseConfig(path string) (*Config, error) {
 	var (
 		parsed Config
 		err    error
@@ -30,10 +30,10 @@ func ParseConfig(path string) (Config, error) {
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return parsed, err
+		return nil, err
 	}
 
 	err = yaml.Unmarshal(data, &parsed)
 
-	return parsed, err
+	return &parsed, err
 }

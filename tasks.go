@@ -1,25 +1,73 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"log/slog"
-	"path/filepath"
-	"sync"
+	"os"
 
-	"github.com/Backblaze/blazer/b2"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/go-co-op/gocron/v2"
 )
 
-func scheduleBucketTasks(s gocron.Scheduler, b2bucket *b2.Bucket, bucket Bucket) {
+func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) {
+	manager := transfermanager.New(app.s3Client)
+
 	for _, task := range bucket.Tasks {
-		_, err := s.NewJob(
+		_, err := app.scheduler.NewJob(
 			gocron.CronJob(
 				task.Schedule,
 				false,
 			),
 			gocron.NewTask(func() {
-				filepath.WalkDir(task.LocalPath, func(path string, d fs.DirEntry, err error) error {
+				d := os.DirFS(task.LocalPath)
+				fs.WalkDir(d, ".", func(path string, d fs.DirEntry, err error) error {
+					if err != nil {
+						slog.Error(err.Error())
+						return nil
+					}
+
+					if !d.IsDir() {
+						_, err = app.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
+							Bucket: aws.String(bucket.Name),
+							Key:    aws.String(path),
+						})
+						if err != nil {
+							if apiError, ok := errors.AsType[smithy.APIError](err); ok {
+								switch apiError.(type) {
+								case *types.NotFound:
+									f, err := os.Open(path)
+									if err != nil {
+										slog.Warn("error opening file", "file", path, "error", err.Error())
+										return nil
+									}
+
+									defer f.Close()
+									slog.Info("uploading object", "object", path)
+
+									_, err = manager.UploadObject(ctx, &transfermanager.UploadObjectInput{
+										Bucket: aws.String(bucket.Name),
+										Key:    aws.String(path),
+										Body:   f,
+									})
+
+									if err != nil {
+										slog.Error("error uploading file", "file", path)
+									} else {
+										slog.Info("uploaded file", "file", path, "bucket", bucket.Name)
+									}
+								default:
+									slog.Warn("error occured with object", "object", path, "error", err.Error())
+								}
+							}
+						}
+					}
+
 					return nil
 				})
 			}),
@@ -36,36 +84,36 @@ func scheduleBucketTasks(s gocron.Scheduler, b2bucket *b2.Bucket, bucket Bucket)
 			} else {
 				slog.Warn(err.Error())
 			}
+		} else {
+			slog.Info(
+				"task scheduled",
+				"bucket", bucket.Name,
+				"local", task.LocalPath,
+				"remote", task.RemotePath,
+			)
 		}
-
-		slog.Info(
-			"task scheduled",
-			"bucket", bucket.Name,
-			"local", task.LocalPath,
-			"remote", task.RemotePath,
-		)
 	}
 }
 
-func ScheduleTasks(s gocron.Scheduler, buckets []*b2.Bucket, config *Config) {
-	var wg sync.WaitGroup
+func (app *Application) ScheduleTasks(ctx context.Context) {
+	for _, bucket := range app.config.Buckets {
+		_, err := app.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
+			Bucket: aws.String(bucket.Name),
+		})
 
-	for _, bucket := range config.Buckets {
-		wg.Go(func() {
-			found := false
-			for _, b2bucket := range buckets {
-				if bucket.Name == b2bucket.Name() {
-					found = true
-					scheduleBucketTasks(s, b2bucket, bucket)
-					break
+		if err != nil {
+			if apiError, ok := errors.AsType[smithy.APIError](err); ok {
+				switch apiError.(type) {
+				case *types.NotFound:
+					slog.Warn("bucket doesn't exist in remote", "bucket", bucket.Name)
+				default:
+					slog.Warn("error occured with bucket", "bucket", bucket.Name)
 				}
 			}
 
-			if !found {
-				slog.Warn("bucket does not exist in remote", "bucket", bucket.Name)
-			}
-		})
-	}
+			continue
+		}
 
-	wg.Wait()
+		app.scheduleBucketTasks(ctx, bucket)
+	}
 }
