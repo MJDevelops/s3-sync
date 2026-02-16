@@ -75,10 +75,17 @@ func main() {
 	app.ScheduleTasks(ctx)
 	s.Start()
 
-	sigc := make(chan os.Signal)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-	sig := <-sigc
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 
-	slog.Info(fmt.Sprintf("received %s, shutting down", sig.String()))
+	done := make(chan bool, 1)
+	go func() {
+		sig := <-sigc
+		slog.Info(fmt.Sprintf("received %s, shutting down", sig))
+		done <- true
+	}()
+
+	<-done
+
 	s.Shutdown()
 }
