@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -21,6 +22,8 @@ type Application struct {
 	config    *Config
 	scheduler gocron.Scheduler
 	manager   *transfermanager.Client
+	uploadCh  chan upload
+	wg        sync.WaitGroup
 }
 
 func Initialize(scheduler gocron.Scheduler) (*Application, error) {
@@ -29,34 +32,43 @@ func Initialize(scheduler gocron.Scheduler) (*Application, error) {
 
 	app.scheduler = scheduler
 
-	id := os.Getenv("B2_APPLICATION_KEY_ID")
-	key := os.Getenv("B2_APPLICATION_KEY")
-	s3Endpoint := os.Getenv("S3_ENDPOINT")
-	s3Region := os.Getenv("S3_REGION")
-
 	configPath := os.Getenv("CONFIG_PATH")
 	if configPath == "" {
 		configPath = "config.yaml"
 	}
 
+	app.config, err = ParseConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+
+	conf := app.config
+
+	if conf.Concurrency <= 0 {
+		slog.Warn("invalid concurrency, defaulting to 5")
+		conf.Concurrency = 5
+	}
+
+	app.uploadCh = make(chan upload)
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(id, key, "")),
+		config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider(conf.Credentials.ApplicationKeyId,
+				conf.Credentials.ApplicationKey,
+				"",
+			),
+		),
 	)
 	if err != nil {
 		return nil, err
 	}
 
 	app.s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(s3Endpoint)
-		o.Region = s3Region
+		o.BaseEndpoint = aws.String(conf.Remote.Endpoint)
+		o.Region = conf.Remote.Region
 	})
 
 	app.manager = transfermanager.New(app.s3Client)
-
-	app.config, err = ParseConfig(configPath)
-	if err != nil {
-		return nil, err
-	}
 
 	return app, nil
 }
@@ -82,14 +94,17 @@ func main() {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 
-	done := make(chan bool, 1)
+	done := make(chan struct{}, 1)
 	go func() {
 		sig := <-sigc
 		slog.Info(fmt.Sprintf("received %s, shutting down", sig))
-		done <- true
+		done <- struct{}{}
 	}()
 
 	<-done
+
+	close(app.uploadCh)
+	app.wg.Wait()
 
 	s.Shutdown()
 }

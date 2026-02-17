@@ -6,7 +6,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
-	"sync"
+	"path/filepath"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
@@ -15,6 +15,42 @@ import (
 	"github.com/aws/smithy-go"
 	"github.com/go-co-op/gocron/v2"
 )
+
+type upload struct {
+	key     string
+	absPath string
+	bucket  string
+}
+
+func (app *Application) uploadFile(ctx context.Context) {
+	for {
+		upload, ok := <-app.uploadCh
+		if !ok {
+			break
+		}
+
+		f, err := os.Open(upload.absPath)
+		if err != nil {
+			slog.Error("error opening file", "file", upload.absPath, "error", err.Error())
+			continue
+		}
+
+		defer f.Close()
+		slog.Info("uploading object", "object", upload.absPath)
+
+		_, err = app.manager.UploadObject(ctx, &transfermanager.UploadObjectInput{
+			Bucket: aws.String(upload.bucket),
+			Key:    aws.String(upload.key),
+			Body:   f,
+		})
+
+		if err != nil {
+			slog.Error("error uploading file", "file", upload.absPath)
+		} else {
+			slog.Info("uploaded file", "file", upload.absPath, "bucket", upload.bucket)
+		}
+	}
+}
 
 func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) {
 	for _, task := range bucket.Tasks {
@@ -40,25 +76,10 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 							if apiError, ok := errors.AsType[smithy.APIError](err); ok {
 								switch apiError.(type) {
 								case *types.NotFound:
-									f, err := os.Open(path)
-									if err != nil {
-										slog.Warn("error opening file", "file", path, "error", err.Error())
-										return nil
-									}
-
-									defer f.Close()
-									slog.Info("uploading object", "object", path)
-
-									_, err = app.manager.UploadObject(ctx, &transfermanager.UploadObjectInput{
-										Bucket: aws.String(bucket.Name),
-										Key:    aws.String(path),
-										Body:   f,
-									})
-
-									if err != nil {
-										slog.Error("error uploading file", "file", path)
-									} else {
-										slog.Info("uploaded file", "file", path, "bucket", bucket.Name)
+									app.uploadCh <- upload{
+										absPath: filepath.Join(task.LocalPath, path),
+										key:     path,
+										bucket:  bucket.Name,
 									}
 								default:
 									slog.Warn("error occured with object", "object", path, "error", err.Error())
@@ -95,7 +116,11 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 }
 
 func (app *Application) ScheduleTasks(ctx context.Context) {
-	var wg sync.WaitGroup
+	for range app.config.Concurrency {
+		app.wg.Go(func() {
+			app.uploadFile(ctx)
+		})
+	}
 
 	for _, bucket := range app.config.Buckets {
 		_, err := app.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
@@ -115,10 +140,6 @@ func (app *Application) ScheduleTasks(ctx context.Context) {
 			continue
 		}
 
-		wg.Go(func() {
-			app.scheduleBucketTasks(ctx, bucket)
-		})
+		app.scheduleBucketTasks(ctx, bucket)
 	}
-
-	wg.Wait()
 }

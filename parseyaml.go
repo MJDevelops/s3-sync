@@ -18,8 +18,21 @@ type Bucket struct {
 	Tasks []BackupTask
 }
 
+type Credentials struct {
+	ApplicationKeyId string
+	ApplicationKey   string
+}
+
+type Remote struct {
+	Endpoint string
+	Region   string
+}
+
 type Config struct {
-	Buckets []Bucket
+	Credentials Credentials
+	Remote      Remote
+	Concurrency int
+	Buckets     []Bucket
 }
 
 func ParseConfig(path string) (*Config, error) {
