@@ -8,8 +8,8 @@ import (
 
 type BackupTask struct {
 	Name       string
-	LocalPath  string
-	RemotePath string
+	LocalPath  string `yaml:"local_path"`
+	RemotePath string `yaml:"remote_path"`
 	Schedule   string
 }
 
@@ -19,8 +19,8 @@ type Bucket struct {
 }
 
 type Credentials struct {
-	ApplicationKeyId string
-	ApplicationKey   string
+	ApplicationKeyId string `yaml:"application_key_id"`
+	ApplicationKey   string `yaml:"application_key"`
 }
 
 type Remote struct {

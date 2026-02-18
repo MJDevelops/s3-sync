@@ -116,13 +116,19 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 }
 
 func (app *Application) ScheduleTasks(ctx context.Context) {
+	slog.Info("starting upload handlers")
+
 	for range app.config.Concurrency {
 		app.wg.Go(func() {
 			app.uploadFile(ctx)
 		})
 	}
 
+	slog.Info("started upload handlers")
+	slog.Info("scheduling bucket tasks")
+
 	for _, bucket := range app.config.Buckets {
+		slog.Info("scheduling tasks for bucket", "bucket", bucket.Name)
 		_, err := app.s3Client.HeadBucket(ctx, &s3.HeadBucketInput{
 			Bucket: aws.String(bucket.Name),
 		})
@@ -141,5 +147,6 @@ func (app *Application) ScheduleTasks(ctx context.Context) {
 		}
 
 		app.scheduleBucketTasks(ctx, bucket)
+		slog.Info("scheduled tasks for bucket", "bucket", bucket.Name)
 	}
 }

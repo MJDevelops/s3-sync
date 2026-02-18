@@ -66,6 +66,7 @@ func Initialize(scheduler gocron.Scheduler) (*Application, error) {
 	app.s3Client = s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(conf.Remote.Endpoint)
 		o.Region = conf.Remote.Region
+		o.UsePathStyle = true
 	})
 
 	app.manager = transfermanager.New(app.s3Client)
