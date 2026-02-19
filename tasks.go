@@ -68,7 +68,13 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 					}
 
 					if !d.IsDir() {
-						objectKey := filepath.ToSlash(filepath.Join(task.RemotePath, path))
+						relPath, err := filepath.Rel(task.LocalPath, path)
+						if err != nil {
+							slog.Error(err.Error())
+							return nil
+						}
+
+						objectKey := filepath.ToSlash(filepath.Join(task.RemotePath, relPath))
 
 						_, err = app.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 							Bucket: aws.String(bucket.Name),
