@@ -84,11 +84,13 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 							if apiError, ok := errors.AsType[smithy.APIError](err); ok {
 								switch apiError.(type) {
 								case *types.NotFound:
-									app.uploadCh <- upload{
-										absPath: path,
-										key:     objectKey,
-										bucket:  bucket.Name,
-									}
+									go func() {
+										app.uploadCh <- upload{
+											absPath: path,
+											key:     objectKey,
+											bucket:  bucket.Name,
+										}
+									}()
 								default:
 									slog.Warn("error occured with object", "object", path, "error", err.Error())
 								}
