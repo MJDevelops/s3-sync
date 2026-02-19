@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+	"github.com/charlievieth/fastwalk"
 	"github.com/go-co-op/gocron/v2"
 )
 
@@ -60,8 +61,7 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 				false,
 			),
 			gocron.NewTask(func() {
-				d := os.DirFS(task.LocalPath)
-				fs.WalkDir(d, ".", func(path string, d fs.DirEntry, err error) error {
+				fastwalk.Walk(nil, task.LocalPath, func(path string, d fs.DirEntry, err error) error {
 					if err != nil {
 						slog.Error(err.Error())
 						return nil
@@ -79,7 +79,7 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 								switch apiError.(type) {
 								case *types.NotFound:
 									app.uploadCh <- upload{
-										absPath: filepath.Join(task.LocalPath, path),
+										absPath: path,
 										key:     objectKey,
 										bucket:  bucket.Name,
 									}
