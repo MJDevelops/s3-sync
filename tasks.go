@@ -68,9 +68,11 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 					}
 
 					if !d.IsDir() {
+						objectKey := filepath.ToSlash(filepath.Join(task.RemotePath, path))
+
 						_, err = app.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
 							Bucket: aws.String(bucket.Name),
-							Key:    aws.String(path),
+							Key:    aws.String(objectKey),
 						})
 						if err != nil {
 							if apiError, ok := errors.AsType[smithy.APIError](err); ok {
@@ -78,7 +80,7 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 								case *types.NotFound:
 									app.uploadCh <- upload{
 										absPath: filepath.Join(task.LocalPath, path),
-										key:     path,
+										key:     objectKey,
 										bucket:  bucket.Name,
 									}
 								default:
