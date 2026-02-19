@@ -23,6 +23,34 @@ type upload struct {
 	bucket  string
 }
 
+type GetBucketKeysOpts struct {
+	BucketName string
+	Prefix     string
+}
+
+func (app *Application) getBucketKeys(ctx context.Context, opts *GetBucketKeysOpts) (map[string]struct{}, error) {
+	keys := make(map[string]struct{})
+
+	objectsPaginator := s3.NewListObjectsV2Paginator(app.s3Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(opts.BucketName),
+		Prefix: aws.String(opts.Prefix),
+	})
+
+	for objectsPaginator.HasMorePages() {
+		objectsOutput, err := objectsPaginator.NextPage(ctx)
+		if err != nil {
+			slog.Error(err.Error())
+			return nil, err
+		}
+
+		for _, object := range objectsOutput.Contents {
+			keys[aws.ToString(object.Key)] = struct{}{}
+		}
+	}
+
+	return keys, nil
+}
+
 func (app *Application) uploadFile(ctx context.Context) {
 	for {
 		upload, ok := <-app.uploadCh
@@ -61,6 +89,17 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 				false,
 			),
 			gocron.NewTask(func() {
+				slog.Info("acquiring object keys", "bucket", bucket.Name, "remote", task.RemotePath)
+				keys, err := app.getBucketKeys(ctx, &GetBucketKeysOpts{
+					BucketName: bucket.Name,
+					Prefix:     task.RemotePath,
+				})
+				if err != nil {
+					slog.Error(err.Error())
+					return
+				}
+				slog.Info("acquired object keys", "bucket", bucket.Name, "remote", task.RemotePath)
+
 				fastwalk.Walk(nil, task.LocalPath, func(path string, d fs.DirEntry, err error) error {
 					if err != nil {
 						slog.Error(err.Error())
@@ -75,26 +114,14 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 						}
 
 						objectKey := filepath.ToSlash(filepath.Join(task.RemotePath, relPath))
-
-						_, err = app.s3Client.HeadObject(ctx, &s3.HeadObjectInput{
-							Bucket: aws.String(bucket.Name),
-							Key:    aws.String(objectKey),
-						})
-						if err != nil {
-							if apiError, ok := errors.AsType[smithy.APIError](err); ok {
-								switch apiError.(type) {
-								case *types.NotFound:
-									go func() {
-										app.uploadCh <- upload{
-											absPath: path,
-											key:     objectKey,
-											bucket:  bucket.Name,
-										}
-									}()
-								default:
-									slog.Warn("error occured with object", "object", path, "error", err.Error())
+						if _, ok := keys[objectKey]; !ok {
+							go func() {
+								app.uploadCh <- upload{
+									absPath: path,
+									key:     objectKey,
+									bucket:  bucket.Name,
 								}
-							}
+							}()
 						}
 					}
 
