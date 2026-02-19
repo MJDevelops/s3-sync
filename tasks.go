@@ -23,13 +23,29 @@ type upload struct {
 	bucket  string
 }
 
-type GetBucketKeysOpts struct {
+type GetObjectsOpts struct {
 	BucketName string
 	Prefix     string
 }
 
-func (app *Application) getBucketKeys(ctx context.Context, opts *GetBucketKeysOpts) (map[string]struct{}, error) {
-	keys := make(map[string]struct{})
+// Reports whether the file was modified after the object was last uploaded
+func objectIsOld(obj types.Object, filepath string) (bool, error) {
+	lastModified := aws.ToTime(obj.LastModified)
+	fileInfo, err := os.Stat(filepath)
+	if err != nil {
+		slog.Error(err.Error())
+		return false, err
+	}
+
+	if fileInfo.ModTime().UTC().After(lastModified) {
+		return true, nil
+	}
+
+	return false, nil
+}
+
+func (app *Application) getObjects(ctx context.Context, opts *GetObjectsOpts) (map[string]types.Object, error) {
+	keys := make(map[string]types.Object)
 
 	objectsPaginator := s3.NewListObjectsV2Paginator(app.s3Client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(opts.BucketName),
@@ -44,7 +60,7 @@ func (app *Application) getBucketKeys(ctx context.Context, opts *GetBucketKeysOp
 		}
 
 		for _, object := range objectsOutput.Contents {
-			keys[aws.ToString(object.Key)] = struct{}{}
+			keys[aws.ToString(object.Key)] = object
 		}
 	}
 
@@ -89,8 +105,8 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 				false,
 			),
 			gocron.NewTask(func() {
-				slog.Info("acquiring object keys", "bucket", bucket.Name, "remote", task.RemotePath)
-				keys, err := app.getBucketKeys(ctx, &GetBucketKeysOpts{
+				slog.Info("acquiring objects", "bucket", bucket.Name, "remote", task.RemotePath)
+				keys, err := app.getObjects(ctx, &GetObjectsOpts{
 					BucketName: bucket.Name,
 					Prefix:     task.RemotePath,
 				})
@@ -98,7 +114,7 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 					slog.Error(err.Error())
 					return
 				}
-				slog.Info("acquired object keys", "bucket", bucket.Name, "remote", task.RemotePath)
+				slog.Info("acquired objects", "bucket", bucket.Name, "remote", task.RemotePath)
 
 				fastwalk.Walk(nil, task.LocalPath, func(path string, d fs.DirEntry, err error) error {
 					if err != nil {
@@ -114,14 +130,22 @@ func (app *Application) scheduleBucketTasks(ctx context.Context, bucket Bucket) 
 						}
 
 						objectKey := filepath.ToSlash(filepath.Join(task.RemotePath, relPath))
-						if _, ok := keys[objectKey]; !ok {
-							go func() {
-								app.uploadCh <- upload{
-									absPath: path,
-									key:     objectKey,
-									bucket:  bucket.Name,
-								}
-							}()
+						upload := func() {
+							app.uploadCh <- upload{
+								absPath: path,
+								key:     objectKey,
+								bucket:  bucket.Name,
+							}
+						}
+
+						obj, ok := keys[objectKey]
+						if !ok {
+							go upload()
+							return nil
+						}
+
+						if old, _ := objectIsOld(obj, path); old {
+							go upload()
 						}
 					}
 
