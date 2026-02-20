@@ -1,4 +1,4 @@
-module github.com/mjdevelops/s3-backups
+module github.com/mjdevelops/s3-sync
 
 go 1.26.0
 
